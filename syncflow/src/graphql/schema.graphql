@@ -1,0 +1,126 @@
+scalar Date
+
+enum Role {
+  user
+  manager
+}
+
+enum Target {
+  user
+  company
+  task
+  noteline
+  note
+  event
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+}
+
+type User {
+  id: ID!
+  username: String!
+  password: String!
+  company: Company!
+  editedLines: [NoteLine!]!
+  tasks: [Task!]!
+  role: Role!
+  deletedAt: Date
+}
+
+type Company {
+  id: ID!
+  name: String!
+  users: [User!]!
+  code: String!
+}
+
+type NoteLine {
+  id: ID
+  content: String
+  updatedAt: Date
+  color: String
+  fontSize: Int
+  highlighted: Boolean
+  lastEditedBy: User
+  lineNumber: Int
+}
+type Event {
+  id: ID!
+  title: String!
+  description: String
+  date: Date!
+  createdBy: User
+}
+
+type Task {
+  id: ID!
+  title: String!
+  description: String
+  dueDate: Date!
+  completed: Boolean!
+  createdAt: Date!
+  assignedTo: User
+  company: Company!
+}
+
+input CreateTaskInput {
+  title: String!
+  description: String
+  dueDate: Date!
+  assignedToId: ID
+  completed: Boolean
+}
+
+input UpdateTaskInput {
+  title: String
+  description: String
+  dueDate: Date
+  assignedToId: ID
+  completed: Boolean
+}
+
+input CreateUserInput {
+  username: String!
+  password: String!
+  role: Role
+}
+
+input UpdateUserInput {
+  username: String
+  password: String
+  role: Role
+}
+type EventTitleByDateDTO {
+  date: Date!
+  titles: [String!]!
+}
+type Query {
+  hello: String
+  users: [User!]!
+  user(id: ID!): User
+  userByUsername(username: String!, companyId: ID!): User
+  usersByCompany(companyId: ID!): [User!]!
+  deletedUsers: [User!]!
+  NoteLines(noteId: ID!, limit:Int, start:Int): [NoteLine]!
+  tasks: [Task]!
+  task(id: ID!): Task
+  tasksByUser(userId: ID!): [Task]!
+  tasksbyday(date: String!): [Task]!
+  tasksByCompany(companyId: ID!): [Task]!
+  getAllEvents: [Event]!
+  EventByMonth(date: String!): [Event]!
+  EventByDay(date: String!): [Event]!
+}
+
+type Mutation {
+  createTask(input: CreateTaskInput!): Task!
+  updateTask(id: ID!, input: UpdateTaskInput!): Task!
+  deleteTask(id: ID!): Boolean!
+  updateUser(id: ID!, input: UpdateUserInput!): User!
+  deleteUser(id: ID!): Boolean!
+  recoverUser(id: ID!): User!
+}
