@@ -15,18 +15,10 @@ class UsersPage extends ConsumerStatefulWidget {
 }
 
 class _UsersPageState extends ConsumerState<UsersPage> {
-  final _searchCtrl = TextEditingController();
-
   @override
   void initState() {
     super.initState();
     Future.microtask(() => ref.read(usersControllerProvider.notifier).load());
-  }
-
-  @override
-  void dispose() {
-    _searchCtrl.dispose();
-    super.dispose();
   }
 
   @override
@@ -83,17 +75,10 @@ class _UsersPageState extends ConsumerState<UsersPage> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
           children: [
-            _FiltersCard(
+            _ShowDeletedCard(
               showDeleted: state.showDeleted,
               onToggleDeleted: (v) =>
                   ref.read(usersControllerProvider.notifier).setShowDeleted(v),
-              searchController: _searchCtrl,
-              onSearchChanged: (v) =>
-                  ref.read(usersControllerProvider.notifier).setSearch(v),
-              roles: state.roles,
-              selectedRole: state.selectedRole,
-              onRoleChanged: (v) =>
-                  ref.read(usersControllerProvider.notifier).setRole(v),
             ),
             const SizedBox(height: 12),
 
@@ -226,26 +211,14 @@ class _UsersPageState extends ConsumerState<UsersPage> {
 
 // ---------------- UI components ----------------
 
-class _FiltersCard extends StatelessWidget {
-  const _FiltersCard({
+class _ShowDeletedCard extends StatelessWidget {
+  const _ShowDeletedCard({
     required this.showDeleted,
     required this.onToggleDeleted,
-    required this.searchController,
-    required this.onSearchChanged,
-    required this.roles,
-    required this.selectedRole,
-    required this.onRoleChanged,
   });
 
   final bool showDeleted;
   final ValueChanged<bool> onToggleDeleted;
-
-  final TextEditingController searchController;
-  final ValueChanged<String> onSearchChanged;
-
-  final List<String> roles;
-  final String selectedRole;
-  final ValueChanged<String> onRoleChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -258,40 +231,13 @@ class _FiltersCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: cs.outlineVariant.withOpacity(0.6)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: searchController,
-                  onChanged: onSearchChanged,
-                  decoration: const InputDecoration(
-                    hintText: 'Search by username...',
-                    prefixIcon: Icon(Icons.search_rounded),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              FilterChip(
-                label: const Text('Show deleted'),
-                selected: showDeleted,
-                onSelected: onToggleDeleted,
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
-            value: selectedRole.isEmpty ? null : selectedRole,
-            items: [
-              const DropdownMenuItem(value: '', child: Text('All roles')),
-              ...roles.map((r) => DropdownMenuItem(value: r, child: Text(r))),
-            ],
-            onChanged: (v) => onRoleChanged(v ?? ''),
-            decoration: const InputDecoration(
-              labelText: 'Role',
-            ),
+          FilterChip(
+            label: const Text('Show deleted users'),
+            selected: showDeleted,
+            onSelected: onToggleDeleted,
           ),
         ],
       ),

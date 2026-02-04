@@ -1,8 +1,11 @@
 class NoteLineDto {
-  final String id;
+  final int id;
   final int lineNumber;
+
   final String content;
-  final String color; // hex like "#000000"
+
+  /// optional style (your backend might return null)
+  final String color;
   final double fontSize;
   final bool highlighted;
 
@@ -15,8 +18,19 @@ class NoteLineDto {
     required this.highlighted,
   });
 
+  factory NoteLineDto.fromJson(Map<String, dynamic> json) {
+    return NoteLineDto(
+      id: (json['id'] as num?)?.toInt() ?? (json['lineNumber'] as num).toInt(),
+      lineNumber: (json['lineNumber'] as num).toInt(),
+      content: (json['content'] ?? '').toString(),
+      color: (json['color'] ?? '#000000').toString(),
+      fontSize: (json['fontSize'] as num?)?.toDouble() ?? 14.0,
+      highlighted: (json['highlighted'] as bool?) ?? false,
+    );
+  }
+
   NoteLineDto copyWith({
-    String? id,
+    int? id,
     int? lineNumber,
     String? content,
     String? color,
@@ -33,30 +47,20 @@ class NoteLineDto {
     );
   }
 
-  factory NoteLineDto.fromJson(Map<String, dynamic> json) {
-    // React receives: fontsize vs fontSize in some events; normalize here
-    final fs = json['fontSize'] ?? json['fontsize'] ?? 14;
-
-    return NoteLineDto(
-      id: json['id'].toString(),
-      lineNumber: (json['lineNumber'] as num).toInt(),
-      content: (json['content'] ?? '').toString(),
-      color: (json['color'] ?? '#000000').toString(),
-      fontSize: (fs as num).toDouble(),
-      highlighted: (json['highlighted'] ?? false) == true,
-    );
-  }
-
+  /// payload used by socket `alterNote`
   Map<String, dynamic> toAlterNotePayload({
     required String noteId,
+    required String? lastupdatedBy,
   }) {
-    return {
+    return <String, dynamic>{
       'noteId': noteId,
       'lineNumber': lineNumber,
       'content': content,
       'color': color,
-      'fontSize': fontSize.round(), // server seems to expect int in UI
+      'fontSize': fontSize,
       'highlighted': highlighted,
+      'lastupdatedBy': lastupdatedBy,
+      'updatedAt': DateTime.now().toIso8601String(),
     };
   }
 }

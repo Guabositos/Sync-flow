@@ -44,7 +44,13 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
       final service = ref.read(dashboardServiceProvider);
 
       final companyTasks = await service.fetchCompanyTasks();
-      final todayStr = _yyyyMmDd(DateTime.now());
+      
+      // ✅ WORKAROUND: Add 1 day to compensate for server timezone offset
+      // Server stores dates in UTC, so when we ask for "today", it returns "yesterday"
+      final now = DateTime.now();
+      final todayNormalized = DateTime(now.year, now.month, now.day);
+      final todayPlusOne = todayNormalized.add(const Duration(days: 1));
+      final todayStr = _yyyyMmDd(todayPlusOne);
       final todayTasks = await service.fetchTasksByDay(todayStr);
 
       setState(() {
@@ -145,6 +151,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
             icon: const Icon(Icons.logout_rounded),
             onPressed: () async {
               await ref.read(authControllerProvider.notifier).logout();
+              context.pushReplacement('/login');
             },
           ),
         ],
@@ -252,19 +259,30 @@ class _GreetingCard extends StatelessWidget {
       child: Row(
         children: [
           CircleAvatar(
-            radius: 22,
-            backgroundColor: cs.primary.withOpacity(0.12),
-            child: Icon(Icons.person_rounded, color: cs.primary),
+            radius: 26,
+            backgroundColor: cs.primary.withOpacity(0.14),
+            child: Icon(Icons.person_rounded, color: cs.primary, size: 30),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 14),
           Expanded(
-            child: Text(
-              'Welcome back, $name',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Welcome back,',
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodyMedium
+                      ?.copyWith(color: cs.onSurfaceVariant, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900),
+                ),
+              ],
             ),
           ),
         ],
@@ -279,80 +297,89 @@ class _StatsRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final width = MediaQuery.sizeOf(context).width;
-    final cols = width >= 700 ? 4 : 2;
-
-    final cards = [
-      _MiniStat(title: 'Total', value: stats.total.toString(), icon: Icons.list_alt_rounded),
-      _MiniStat(title: 'Done', value: stats.completed.toString(), icon: Icons.check_circle_outline_rounded),
-      _MiniStat(title: 'Pending', value: stats.pending.toString(), icon: Icons.timelapse_rounded),
-      _MiniStat(title: 'Rate', value: '${stats.completionRate}%', icon: Icons.insights_rounded),
-    ];
-
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: cards.length,
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: cols,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        childAspectRatio: 2.2,
-      ),
-      itemBuilder: (_, i) => cards[i],
+    final cs = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Expanded(
+          child: _StatCard(
+            icon: Icons.checklist_rounded,
+            label: 'Total',
+            value: '${stats.total}',
+            color: cs.primary,
+            bg: cs.primaryContainer,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _StatCard(
+            icon: Icons.check_circle_rounded,
+            label: 'Completed',
+            value: '${stats.completed}',
+            color: cs.tertiary,
+            bg: cs.tertiaryContainer,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _StatCard(
+            icon: Icons.pending_actions_rounded,
+            label: 'Pending',
+            value: '${stats.pending}',
+            color: cs.secondary,
+            bg: cs.secondaryContainer,
+          ),
+        ),
+      ],
     );
   }
 }
 
-class _MiniStat extends StatelessWidget {
-  const _MiniStat({required this.title, required this.value, required this.icon});
-  final String title;
-  final String value;
+class _StatCard extends StatelessWidget {
+  const _StatCard({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.color,
+    required this.bg,
+  });
   final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
+  final Color bg;
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
       decoration: BoxDecoration(
-        color: cs.surface,
+        color: bg.withOpacity(0.4),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: cs.outlineVariant.withOpacity(0.6)),
+        border: Border.all(color: color.withOpacity(0.4)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: cs.primary.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(icon, color: cs.primary),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Icon(icon, color: color, size: 24),
+              Text(
+                value,
+                style: Theme.of(context)
+                    .textTheme
+                    .headlineMedium
+                    ?.copyWith(fontWeight: FontWeight.w900, color: color),
+              ),
+            ],
           ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  title,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: cs.onSurfaceVariant,
-                        fontWeight: FontWeight.w700,
-                      ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  value,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w900,
-                      ),
-                ),
-              ],
-            ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(fontWeight: FontWeight.w700, color: color.withOpacity(0.85)),
           ),
         ],
       ),
@@ -361,7 +388,7 @@ class _MiniStat extends StatelessWidget {
 }
 
 class _SectionTitle extends StatelessWidget {
-  const _SectionTitle({required this.title, required this.actionText, required this.onAction});
+  const _SectionTitle({required this.title, this.actionText, this.onAction});
   final String title;
   final String? actionText;
   final VoidCallback? onAction;
@@ -369,15 +396,14 @@ class _SectionTitle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Expanded(
-          child: Text(
-            title,
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
-          ),
-        ),
+        Text(title, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900)),
         if (actionText != null && onAction != null)
-          TextButton(onPressed: onAction, child: Text(actionText!)),
+          TextButton(
+            onPressed: onAction,
+            child: Text(actionText!),
+          ),
       ],
     );
   }
@@ -392,11 +418,10 @@ class _TaskTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    // ✅ brute fix: move displayed date +1 day
-    final shifted = task.dueDate?.add(const Duration(days: 1));
-    final due = shifted == null
+    // ✅ FIXED: No longer adding 1 day - display the actual due date
+    final due = task.dueDate == null
         ? 'No due date'
-        : '${shifted.year}-${shifted.month.toString().padLeft(2, '0')}-${shifted.day.toString().padLeft(2, '0')}';
+        : '${task.dueDate!.year}-${task.dueDate!.month.toString().padLeft(2, '0')}-${task.dueDate!.day.toString().padLeft(2, '0')}';
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -579,7 +604,12 @@ class _AddTaskSheetState extends State<_AddTaskSheet> {
                       lastDate: DateTime(now.year + 3, 12, 31),
                       initialDate: _dueDate ?? now,
                     );
-                    if (picked != null) setState(() => _dueDate = picked);
+                    // ✅ FIXED: Normalize the picked date exactly like calendar_page.dart
+                    if (picked != null) {
+                      setState(() {
+                        _dueDate = DateTime(picked.year, picked.month, picked.day);
+                      });
+                    }
                   },
                   icon: const Icon(Icons.event_rounded),
                   label: Text(_dueDate == null ? 'Pick due date' : _yyyyMmDd(_dueDate!)),
@@ -623,10 +653,24 @@ class _AddTaskSheetState extends State<_AddTaskSheet> {
                                 .showSnackBar(const SnackBar(content: Text('Task title is required')));
                             return;
                           }
+                          
+                          // ✅ FIXED: Send date as ISO8601 with time at noon to avoid timezone issues
+                          String? dueDateIso;
+                          if (_dueDate != null) {
+                            final dtWithTime = DateTime(
+                              _dueDate!.year,
+                              _dueDate!.month,
+                              _dueDate!.day,
+                              12, // noon
+                              0,
+                            );
+                            dueDateIso = dtWithTime.toUtc().toIso8601String();
+                          }
+                          
                           await widget.onSubmit(_AddTaskData(
                             title: t,
                             description: _desc.text.trim().isEmpty ? null : _desc.text.trim(),
-                            dueDateIso: _dueDate == null ? null : _yyyyMmDd(_dueDate!),
+                            dueDateIso: dueDateIso,
                             assignedToId: _assignedTo,
                           ));
                         },

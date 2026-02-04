@@ -185,13 +185,6 @@ class _CalendarPageState extends ConsumerState<CalendarPage> {
                     child: _EventTile(event: e),
                   )),
 
-            // Optional manager hint section (kept if you had it)
-            if (isManager) ...[
-              const SizedBox(height: 10),
-              const _InfoCard(
-                text: 'Only managers can create events. All users can view them.',
-              ),
-            ],
           ],
         ),
       ),
@@ -240,20 +233,6 @@ class _EmptyCard extends StatelessWidget {
   }
 }
 
-class _InfoCard extends StatelessWidget {
-  const _InfoCard({required this.text});
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Text(text),
-      ),
-    );
-  }
-}
 
 class _EventTile extends StatelessWidget {
   const _EventTile({required this.event});

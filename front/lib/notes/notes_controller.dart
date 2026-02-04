@@ -18,7 +18,9 @@ class NotesState {
   final bool loading;
   final String? error;
 
+  final List<NoteInfoDto> notes;
   final String? noteId;
+
   final bool isConnected;
 
   final List<NoteLineDto> lines;
@@ -26,10 +28,12 @@ class NotesState {
   /// lineNumber -> username
   final Map<int, String> softLocks;
 
+  /// selected line in UI (only if lock success)
   final int? selectedLine;
 
   const NotesState({
     required this.loading,
+    required this.notes,
     required this.lines,
     required this.softLocks,
     required this.isConnected,
@@ -40,6 +44,7 @@ class NotesState {
 
   factory NotesState.initial() => const NotesState(
         loading: true,
+        notes: [],
         lines: [],
         softLocks: {},
         isConnected: false,
@@ -51,6 +56,7 @@ class NotesState {
   NotesState copyWith({
     bool? loading,
     String? error,
+    List<NoteInfoDto>? notes,
     String? noteId,
     bool? isConnected,
     List<NoteLineDto>? lines,
@@ -60,6 +66,7 @@ class NotesState {
     return NotesState(
       loading: loading ?? this.loading,
       error: error,
+      notes: notes ?? this.notes,
       noteId: noteId ?? this.noteId,
       isConnected: isConnected ?? this.isConnected,
       lines: lines ?? this.lines,
@@ -71,16 +78,25 @@ class NotesState {
 
 class NotesController extends StateNotifier<NotesState> {
   NotesController(this.ref) : super(NotesState.initial());
-
   final Ref ref;
 
   io.Socket? _socket;
 
-  // per-line debounce timer
-  final Map<int, Timer> _debounce = {};
-  // last payload per line (so we can flush before unlock)
+  /// Debounce per line (~350ms)
+  final Map<int, Timer> _emitTimers = {};
+
+  /// keep last payload to flush on unlock/dispose
   final Map<int, Map<String, dynamic>> _pendingPayload = {};
 
+  /// The ONLY line we truly own (confirmed by server lock event)
+  int? _currentLockedLine;
+
+  /// A line we requested but not yet confirmed
+  int? _pendingLockLine;
+
+  // ---------------------------
+  // INIT / OPEN NOTE
+  // ---------------------------
   Future<void> init() async {
     state = state.copyWith(loading: true, error: null);
 
@@ -90,85 +106,122 @@ class NotesController extends StateNotifier<NotesState> {
         throw Exception('Not authenticated.');
       }
 
-      final noteId = await ref.read(notesServiceProvider).fetchOrCreateNoteId();
-      state = state.copyWith(noteId: noteId);
+      final svc = ref.read(notesServiceProvider);
 
-      final lines =
-          await ref.read(notesServiceProvider).fetchNoteLines(noteId: noteId);
-      state = state.copyWith(lines: lines, loading: false);
+      var notes = await svc.fetchNotesInfo(start: 0, limit: 50);
+      if (notes.isEmpty) {
+        final created = await svc.createNote(title: 'Company board');
+        notes = [created];
+      }
 
-      _connectSocket(
-        token: auth.token!,
-        noteId: noteId,
-        username: auth.user!.username,
-      );
+      state = state.copyWith(notes: notes);
+
+      final firstNoteId = notes.first.id.toString();
+      await openNote(firstNoteId);
     } catch (e) {
       state = state.copyWith(loading: false, error: e.toString());
     }
   }
 
+  Future<void> openNote(String noteId) async {
+    await unlockSelectedLine();
+    _disconnectSocket();
+
+    state = state.copyWith(
+      loading: true,
+      error: null,
+      noteId: noteId,
+      lines: [],
+      softLocks: {},
+      selectedLine: null,
+      isConnected: false,
+    );
+
+    final auth = ref.read(authControllerProvider);
+    final svc = ref.read(notesServiceProvider);
+    final username = auth.user!.username;
+
+    // REST load lines
+    var lines = await svc.fetchNoteLines(noteId: noteId);
+
+    // seed if empty
+    if (lines.isEmpty) {
+      try {
+        lines = await svc.createLines(noteId: noteId);
+      } catch (_) {}
+    }
+
+    state = state.copyWith(lines: lines, loading: false);
+
+    _connectSocket(
+      token: _ensureBearer(auth.token!),
+      noteId: noteId,
+      username: username,
+    );
+  }
+
+  String _ensureBearer(String token) {
+    if (token.toLowerCase().startsWith('bearer ')) return token;
+    return 'Bearer $token';
+  }
+
+  void _disconnectSocket() {
+    _socket?.disconnect();
+    _socket?.dispose();
+    _socket = null;
+    _currentLockedLine = null;
+    _pendingLockLine = null;
+  }
+
+  // ---------------------------
+  // SOCKET
+  // ---------------------------
   void _connectSocket({
     required String token,
     required String noteId,
     required String username,
   }) {
-    _socket?.dispose();
-    _socket = null;
-
     final url = AppConfig.wsBaseUrl;
 
-    // ✅ Backend expects:
-    // - namespace: /whiteboard
-    // - noteId in query: ?noteId=123
-    // - token in auth: { token: 'Bearer ...' }
     final socket = io.io(
       '$url/whiteboard',
       <String, dynamic>{
         'transports': ['websocket'],
         'autoConnect': true,
         'reconnection': true,
-        'reconnectionAttempts': 10,
-        'reconnectionDelay': 500,
-        'reconnectionDelayMax': 4000,
-
         'auth': {'token': token},
         'query': {'noteId': noteId},
       },
     );
 
-    socket.onConnect((_) {
-      state = state.copyWith(isConnected: true, error: null);
-    });
-
-    socket.onDisconnect((_) {
-      state = state.copyWith(isConnected: false);
-    });
+    socket.onConnect((_) => state = state.copyWith(isConnected: true));
+    socket.onDisconnect((_) => state = state.copyWith(isConnected: false));
 
     socket.onConnectError((err) {
       state = state.copyWith(
         isConnected: false,
-        error: 'Socket connect error: ${err.toString()}',
+        error: 'Socket connect error: $err',
       );
     });
 
-    socket.onError((err) {
-      state = state.copyWith(error: 'Socket error: ${err.toString()}');
-    });
-
+    // initial locks
     socket.on('currentSoftlocks', (data) {
-      final map = <int, String>{};
-      if (data is List) {
-        for (final item in data) {
-          if (item is! Map) continue;
+      if (data is! List) return;
+      final next = Map<int, String>.from(state.softLocks);
+
+      for (final item in data) {
+        if (item is Map) {
           final m = item.cast<String, dynamic>();
-          if (m['noteId']?.toString() == noteId) {
-            map[(m['lineNumber'] as num).toInt()] = m['username'].toString();
-          }
+          final ln = (m['lineNumber'] as num).toInt();
+          final who = m['username']?.toString() ?? '';
+          if (who.isNotEmpty) next[ln] = who;
         }
       }
-      state = state.copyWith(softLocks: map);
+
+      state = state.copyWith(softLocks: next);
     });
 
+    // lock broadcast (also confirms our lock)
     socket.on('softlock', (data) {
       if (data is! Map) return;
       final m = data.cast<String, dynamic>();
@@ -177,34 +230,86 @@ class NotesController extends StateNotifier<NotesState> {
       final ln = (m['lineNumber'] as num).toInt();
       final who = m['username'].toString();
 
+      // update lock map
       final next = Map<int, String>.from(state.softLocks)..[ln] = who;
       state = state.copyWith(softLocks: next);
+
+      // confirm my requested lock
+      if (_pendingLockLine == ln && who == username) {
+        _pendingLockLine = null;
+        _currentLockedLine = ln;
+        state = state.copyWith(selectedLine: ln);
+      }
     });
 
+    // denied lock
+    socket.on('softlockDenied', (data) {
+      if (data is! Map) return;
+      final m = data.cast<String, dynamic>();
+
+      final deniedLine = (m['lineNumber'] as num).toInt();
+      final lockedBy = m['lockedBy']?.toString() ?? 'someone';
+
+      final next = Map<int, String>.from(state.softLocks)..[deniedLine] = lockedBy;
+      state = state.copyWith(softLocks: next);
+
+      if (_pendingLockLine == deniedLine) {
+        _pendingLockLine = null;
+        // do not select
+        if (state.selectedLine == deniedLine) {
+          state = state.copyWith(selectedLine: null);
+        }
+        if (_currentLockedLine == deniedLine) {
+          _currentLockedLine = null;
+        }
+      }
+    });
+
+    // unlock broadcast
     socket.on('softunlock', (data) {
       if (data is! Map) return;
       final m = data.cast<String, dynamic>();
       if (m['noteId']?.toString() != noteId) return;
 
       final ln = (m['lineNumber'] as num).toInt();
+      final who = m['username']?.toString(); // ✅ important
+
+      // update map for everyone
       final next = Map<int, String>.from(state.softLocks)..remove(ln);
       state = state.copyWith(softLocks: next);
 
-      if (state.selectedLine == ln && m['username']?.toString() == username) {
-        state = state.copyWith(selectedLine: null);
+      // ✅ Only clear my edit state if *I* unlocked
+      if (who == username && _currentLockedLine == ln) {
+        _currentLockedLine = null;
+        if (state.selectedLine == ln) {
+          state = state.copyWith(selectedLine: null);
+        }
+      }
+
+      if (_pendingLockLine == ln) {
+        _pendingLockLine = null;
       }
     });
 
+    // live updates
     socket.on('noteUpdated', (data) {
       if (data is! Map) return;
       final m = data.cast<String, dynamic>();
       if (m['noteId']?.toString() != noteId) return;
 
       final updated = NoteLineDto.fromJson(m);
-      final idx =
-          state.lines.indexWhere((x) => x.lineNumber == updated.lineNumber);
+      final ln = updated.lineNumber;
 
+      // ignore self echo
+      final lastBy = m['lastupdatedBy']?.toString();
+      if (lastBy != null && lastBy == username) return;
+
+      // ✅ If I have the confirmed lock on this line, ignore updates to prevent cursor issues
+      if (_currentLockedLine == ln) return;
+
+      final idx = state.lines.indexWhere((x) => x.lineNumber == ln);
       final nextLines = List<NoteLineDto>.from(state.lines);
+
       if (idx >= 0) {
         nextLines[idx] = nextLines[idx].copyWith(
           content: updated.content,
@@ -223,6 +328,9 @@ class NotesController extends StateNotifier<NotesState> {
     _socket = socket;
   }
 
+  // ---------------------------
+  // PERMISSIONS
+  // ---------------------------
   bool canEditLine(int lineNumber) {
     final auth = ref.read(authControllerProvider);
     final me = auth.user?.username;
@@ -230,49 +338,95 @@ class NotesController extends StateNotifier<NotesState> {
     return lockedBy == null || lockedBy == me;
   }
 
-  String? lockedBy(int lineNumber) => state.softLocks[lineNumber];
-
-  Future<void> selectLine(int lineNumber) async {
-    if (state.noteId == null) return;
-    if (!state.isConnected) return;
-
+  bool _isConfirmedMine(int lineNumber) {
     final auth = ref.read(authControllerProvider);
-    if (auth.user == null) return;
-
-    if (!canEditLine(lineNumber)) return;
-    if (state.selectedLine == lineNumber) return;
-
-    await unlockSelectedLine();
-    state = state.copyWith(selectedLine: lineNumber);
-
-    // ✅ backend reads noteId from handshake.query => only send lineNumber
-    _socket?.emit('softlock', {'lineNumber': lineNumber});
+    final me = auth.user?.username;
+    if (me == null) return false;
+    
+    // Check if server confirmed we have the lock
+    return state.softLocks[lineNumber] == me;
   }
 
-  void updateLineContent(int lineNumber, String newContent) {
+  String? lockedBy(int lineNumber) => state.softLocks[lineNumber];
+
+  // ---------------------------
+  // LOCK / UNLOCK
+  // ---------------------------
+  /// Request lock and WAIT for server 'softlock' with my username before selecting.
+  Future<void> selectLine(int lineNumber) async {
     final noteId = state.noteId;
     if (noteId == null) return;
-    if (!canEditLine(lineNumber)) return;
+
+    final auth = ref.read(authControllerProvider);
+    final me = auth.user?.username;
+    if (me == null) return;
+
+    if (!state.isConnected || _socket == null) return;
+
+    // already confirmed on this line
+    if (_currentLockedLine == lineNumber && state.selectedLine == lineNumber) return;
+
+    await unlockSelectedLine();
+
+    _pendingLockLine = lineNumber;
+    
+    // Request lock from server - will be set when 'softlock' event confirms
+    _socket!.emit('softlock', {'lineNumber': lineNumber});
+  }
+
+  Future<void> unlockSelectedLine() async {
+    final noteId = state.noteId;
+    final lineNumber = state.selectedLine;
+
+    // clear pending request always
+    _pendingLockLine = null;
+
+    if (noteId == null || lineNumber == null) return;
+
+    // flush pending edit for this line
+    _emitTimers[lineNumber]?.cancel();
+    final pending = _pendingPayload.remove(lineNumber);
+    if (pending != null && state.isConnected && _socket != null) {
+      _socket!.emit('alterNote', pending);
+    }
+
+    if (state.isConnected && _socket != null) {
+      _socket!.emit('softunlock', {'lineNumber': lineNumber});
+    }
+
+    _currentLockedLine = null;
+    state = state.copyWith(selectedLine: null);
+
+    // remove my local lock marker if it was mine
+    final auth = ref.read(authControllerProvider);
+    final me = auth.user?.username;
+    final locks = Map<int, String>.from(state.softLocks);
+    if (locks[lineNumber] == me) {
+      locks.remove(lineNumber);
+      state = state.copyWith(softLocks: locks);
+    }
+  }
+
+  // ---------------------------
+  // EDITING (NO UNSELECT)
+  // ---------------------------
+  void updateLineContent(int lineNumber, String newContent) {
+    // ✅ If this is our selected line, allow the update regardless
+    // The UI already checked canEdit before enabling the TextField
+    if (state.selectedLine != lineNumber) {
+      if (!canEditLine(lineNumber)) return;
+      if (!_isConfirmedMine(lineNumber)) return;
+    }
+
+    // keep internal "current" in sync
+    _currentLockedLine = lineNumber;
 
     final nextLines = state.lines
-        .map((l) =>
-            l.lineNumber == lineNumber ? l.copyWith(content: newContent) : l)
+        .map((l) => l.lineNumber == lineNumber ? l.copyWith(content: newContent) : l)
         .toList();
+
     state = state.copyWith(lines: nextLines);
-
-    _debounce[lineNumber]?.cancel();
-
-    final payload = nextLines
-        .firstWhere((l) => l.lineNumber == lineNumber)
-        .toAlterNotePayload(noteId: noteId);
-
-    _pendingPayload[lineNumber] = payload;
-
-    _debounce[lineNumber] = Timer(const Duration(milliseconds: 500), () {
-      if (!state.isConnected) return;
-      _socket?.emit('alterNote', payload);
-      _pendingPayload.remove(lineNumber);
-    });
+    _scheduleAlterNote(lineNumber);
   }
 
   void updateLineStyle({
@@ -281,57 +435,71 @@ class NotesController extends StateNotifier<NotesState> {
     double? fontSize,
     bool? highlighted,
   }) {
-    final noteId = state.noteId;
-    if (noteId == null) return;
-    if (!canEditLine(lineNumber)) return;
+    // ✅ If this is our selected line, allow the update regardless
+    if (state.selectedLine != lineNumber) {
+      if (!canEditLine(lineNumber)) return;
+      if (!_isConfirmedMine(lineNumber)) return;
+    }
 
-    final idx = state.lines.indexWhere((l) => l.lineNumber == lineNumber);
-    if (idx < 0) return;
+    _currentLockedLine = lineNumber;
 
-    final updated = state.lines[idx].copyWith(
-      color: color,
-      fontSize: fontSize,
-      highlighted: highlighted,
-    );
+    final nextLines = state.lines.map((l) {
+      if (l.lineNumber != lineNumber) return l;
+      return l.copyWith(
+        color: color ?? l.color,
+        fontSize: fontSize ?? l.fontSize,
+        highlighted: highlighted ?? l.highlighted,
+      );
+    }).toList();
 
-    final nextLines = List<NoteLineDto>.from(state.lines);
-    nextLines[idx] = updated;
     state = state.copyWith(lines: nextLines);
-
-    final payload = updated.toAlterNotePayload(noteId: noteId);
-    _socket?.emit('alterNote', payload);
+    _scheduleAlterNote(lineNumber);
   }
 
-  Future<void> unlockSelectedLine() async {
+  /// debounce: send after user stops typing. NO ACK.
+  void _scheduleAlterNote(int lineNumber) {
     final noteId = state.noteId;
-    final line = state.selectedLine;
-    if (noteId == null || line == null) return;
+    if (noteId == null) return;
+    if (!state.isConnected || _socket == null) return;
+    if (!_isConfirmedMine(lineNumber)) return;
 
-    _debounce[line]?.cancel();
-    final payload = _pendingPayload.remove(line);
-    if (payload != null && state.isConnected) {
-      _socket?.emit('alterNote', payload);
-    }
+    final line = state.lines.where((l) => l.lineNumber == lineNumber).toList();
+    if (line.isEmpty) return;
 
-    if (state.isConnected) {
-      _socket?.emit('softunlock', {'lineNumber': line});
-    }
+    final auth = ref.read(authControllerProvider);
+    final payload = line.first.toAlterNotePayload(
+      noteId: noteId,
+      lastupdatedBy: auth.user?.username,
+    );
 
-    state = state.copyWith(selectedLine: null);
+    _pendingPayload[lineNumber] = payload;
+
+    _emitTimers[lineNumber]?.cancel();
+    _emitTimers[lineNumber] = Timer(const Duration(milliseconds: 350), () {
+      if (!state.isConnected || _socket == null) return;
+      if (!_isConfirmedMine(lineNumber)) return;
+      _socket!.emit('alterNote', payload);
+      _emitTimers.remove(lineNumber);
+      _pendingPayload.remove(lineNumber);
+    });
   }
 
   @override
   void dispose() {
-    unawaited(unlockSelectedLine());
-
-    for (final t in _debounce.values) {
+    for (final t in _emitTimers.values) {
       t.cancel();
     }
-    _debounce.clear();
+    _emitTimers.clear();
+
+    // flush any pending edits before closing
+    if (state.isConnected && _socket != null) {
+      for (final payload in _pendingPayload.values) {
+        _socket!.emit('alterNote', payload);
+      }
+    }
     _pendingPayload.clear();
 
-    _socket?.dispose();
-    _socket = null;
+    _disconnectSocket();
     super.dispose();
   }
 }

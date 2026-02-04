@@ -26,7 +26,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
     Future.microtask(() {
       final s = ref.read(appChatControllerProvider);
-      _uiController.setMessages(s.messages);
+      _uiController.setMessages(s.messages.reversed.toList());
     });
     
     // ✅ LISTEN ONCE
@@ -99,7 +99,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
     // Keep UI controller synced with controller state
     ref.listen(appChatControllerProvider, (_, next) {
-      _uiController.setMessages(next.messages);
+      _uiController.setMessages(next.messages.reversed.toList());
     });
 
     if (state.loadingRooms) {
