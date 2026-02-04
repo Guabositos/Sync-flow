@@ -9,6 +9,8 @@ import '../widgets/tasks_chart.dart';
 import '../widgets/loading.dart';
 import '../widgets/error.dart';
 import 'dashboard_service.dart';
+import '../chat/chat_controller.dart';
+
 
 final dashboardServiceProvider = Provider<DashboardService>((ref) => DashboardService());
 
@@ -151,6 +153,7 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
             icon: const Icon(Icons.logout_rounded),
             onPressed: () async {
               await ref.read(authControllerProvider.notifier).logout();
+              ref.invalidate(appChatControllerProvider);
               context.pushReplacement('/login');
             },
           ),

@@ -18,6 +18,7 @@ class ChatPage extends ConsumerStatefulWidget {
 
 class _ChatPageState extends ConsumerState<ChatPage> {
   late final core.InMemoryChatController _uiController;
+  bool _printedDebugOnce = false;
 
   @override
   void initState() {
@@ -28,9 +29,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       final s = ref.read(appChatControllerProvider);
       _uiController.setMessages(s.messages.reversed.toList());
     });
-    
-    // ✅ LISTEN ONCE
-  
   }
 
   @override
@@ -97,9 +95,22 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       );
     }
 
+    // ✅ IMPORTANT: always pass String IDs
+    final currentUserId = auth.user!.id.toString();
+
     // Keep UI controller synced with controller state
     ref.listen(appChatControllerProvider, (_, next) {
       _uiController.setMessages(next.messages.reversed.toList());
+
+      // ✅ DEBUG ONCE: check if authorId differs between users
+      if (!_printedDebugOnce && next.messages.isNotEmpty) {
+        _printedDebugOnce = true;
+        debugPrint('✅ currentUserId = $currentUserId');
+        for (var i = 0; i < next.messages.length && i < 10; i++) {
+          final m = next.messages[i];
+          debugPrint('msg[$i] id=${m.id} authorId=${m.authorId}');
+        }
+      }
     });
 
     if (state.loadingRooms) {
@@ -179,7 +190,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             child: state.activeRoomId == null
                 ? const Center(child: Text('Select a chat to start messaging.'))
                 : Chat(
-                    currentUserId: auth.user!.id,
+                    // ✅ THIS is what decides left/right
+                    currentUserId: currentUserId,
                     resolveUser: (id) => notifier.resolveUser(id),
                     chatController: _uiController,
                     onMessageSend: (text) async {
